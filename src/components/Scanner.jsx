@@ -20,12 +20,6 @@ function lerpBox(from, to, t) {
   ];
 }
 
-// Mirror a bbox horizontally within a given width
-function mirrorBox(bbox, width) {
-  const [x1, y1, x2, y2] = bbox;
-  return [width - x2, y1, width - x1, y2];
-}
-
 // Euclidean distance between box centres
 function boxDist(a, b) {
   const ca = [(a[0] + a[2]) / 2, (a[1] + a[3]) / 2];
