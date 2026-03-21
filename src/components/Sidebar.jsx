@@ -2,7 +2,6 @@ import React from 'react';
 import Logo from './Logo';
 import { cn } from './ui';
 
-// Inline SVG icons — consistent 16px, clean lines
 const Icons = {
   Home:     () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>,
   Scan:     () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/></svg>,
@@ -11,7 +10,8 @@ const Icons = {
   Chart:    () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="2" y1="20" x2="22" y2="20"/></svg>,
   Settings: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>,
   Search:   () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>,
-  Circle:   () => <svg width="5" height="5" viewBox="0 0 10 10" fill="currentColor"><circle cx="5" cy="5" r="5"/></svg>,
+  Users:    () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>,
+  Present:  () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>,
 };
 
 const NAV_SECTIONS = [
@@ -39,6 +39,8 @@ const NAV_SECTIONS = [
 ];
 
 export default function Sidebar({ tab, setTab, health, onSearch }) {
+  const isOnline = health?.ok;
+
   return (
     <aside className="sidebar">
       {/* Logo */}
@@ -95,19 +97,49 @@ export default function Sidebar({ tab, setTab, health, onSearch }) {
         ))}
       </nav>
 
-      {/* Status footer */}
+      {/* Status footer — shows real live stats from health endpoint */}
       <div className="border-t border-border p-3 flex-shrink-0">
-        <div className="flex items-center gap-2.5 px-1">
-          <span className={`dot ${health?.ok ? 'dot-green dot-pulse' : 'dot-red'}`} />
-          <div className="min-w-0">
-            <p className="text-xs font-medium text-foreground">
-              {health?.ok ? 'System Online' : 'Offline'}
-            </p>
-            <p className="text-[10px] text-muted-foreground truncate">
-              {health?.ok ? `${health.users} registered` : 'Check Railway'}
-            </p>
-          </div>
+        <div className="flex items-center gap-2 px-1 mb-2">
+          <span className={`dot ${isOnline ? 'dot-green dot-pulse' : 'dot-red'}`} />
+          <p className="text-xs font-medium text-foreground">
+            {isOnline ? 'System Online' : 'Offline'}
+          </p>
+          {!isOnline && (
+            <span className="text-[10px] text-muted-foreground ml-auto">Check Railway</span>
+          )}
         </div>
+
+        {isOnline && (
+          <div className="space-y-1 px-1">
+            {/* Registered users */}
+            <div className="flex items-center gap-1.5">
+              <Icons.Users />
+              <span className="text-[11px] text-muted-foreground">
+                <span className="font-medium text-foreground">{health.users ?? 0}</span> registered
+              </span>
+            </div>
+
+            {/* Present now */}
+            {health.present_now != null && (
+              <div className="flex items-center gap-1.5">
+                <Icons.Present />
+                <span className="text-[11px] text-muted-foreground">
+                  <span className="font-medium text-foreground">{health.present_now}</span> present now
+                </span>
+              </div>
+            )}
+
+            {/* Today's entries */}
+            {health.present_today != null && (
+              <div className="flex items-center gap-1.5">
+                <span className="w-3 h-3 flex items-center justify-center text-[10px] text-muted-foreground">◷</span>
+                <span className="text-[11px] text-muted-foreground">
+                  <span className="font-medium text-foreground">{health.present_today}</span> today
+                </span>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </aside>
   );
