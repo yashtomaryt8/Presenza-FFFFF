@@ -1,61 +1,91 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import Webcam from 'react-webcam';
-import { Button, Badge, Toggle, Card, Alert, cn } from './ui';
+import { Button, Badge, Toggle, Card, cn } from './ui';
 import { api } from '../utils/api';
 
-// ── Constants ─────────────────────────────────────────────────────
-const SCAN_MS   = 350;   // fire a scan every 350ms (non-blocking pipeline)
-const LERP      = 0.25;  // interpolation factor for smooth box movement (0=frozen,1=instant)
-const FADE_MS   = 2000;  // fade unknown boxes after 2s of not being seen
+// ── Constants ─────────────────────────────────────────────────────────────────
+const SCAN_MS  = 300;   // fire a scan every 300ms
+const LERP     = 0.10;  // smooth interpolation (low = very smooth, 0.10 works well at 1fps server)
+const FADE_MS  = 1800;  // fade boxes after 1.8s of not being seen
 
-// ── Motion detector ───────────────────────────────────────────────
-function motionScore(prev, curr) {
-  if (!prev || !curr || prev.length !== curr.length) return 1;
-  let d = 0;
-  const n = Math.min(prev.length, 3072); // 64×48 pixels
-  for (let i = 0; i < n; i++) d += Math.abs(prev[i] - curr[i]);
-  return d / n / 255;
-}
+// ── Lerp helpers ──────────────────────────────────────────────────────────────
+function lerp(a, b, t) { return a + (b - a) * t; }
 
-// ── Lerp box positions ────────────────────────────────────────────
 function lerpBox(from, to, t) {
   return [
-    from[0] + (to[0] - from[0]) * t,
-    from[1] + (to[1] - from[1]) * t,
-    from[2] + (to[2] - from[2]) * t,
-    from[3] + (to[3] - from[3]) * t,
+    lerp(from[0], to[0], t),
+    lerp(from[1], to[1], t),
+    lerp(from[2], to[2], t),
+    lerp(from[3], to[3], t),
   ];
 }
 
+// Mirror a bbox horizontally within a given width
+function mirrorBox(bbox, width) {
+  const [x1, y1, x2, y2] = bbox;
+  return [width - x2, y1, width - x1, y2];
+}
+
+// Euclidean distance between box centres
+function boxDist(a, b) {
+  const ca = [(a[0] + a[2]) / 2, (a[1] + a[3]) / 2];
+  const cb = [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2];
+  return Math.hypot(ca[0] - cb[0], ca[1] - cb[1]);
+}
+
+// ── Corner accent drawing ─────────────────────────────────────────────────────
+function drawCorners(ctx, x, y, w, h, color, size = 14) {
+  const s = Math.min(size, w * 0.2, h * 0.2);
+  ctx.strokeStyle = color;
+  ctx.lineWidth   = 2.5;
+  ctx.lineCap     = 'round';
+  [
+    [x,     y,     s,  0,  0,  s],
+    [x + w, y,    -s,  0,  0,  s],
+    [x,     y + h, s,  0,  0, -s],
+    [x + w, y + h, -s, 0,  0, -s],
+  ].forEach(([ox, oy, dx1, dy1, dx2, dy2]) => {
+    ctx.beginPath();
+    ctx.moveTo(ox + dx1, oy + dy1);
+    ctx.lineTo(ox, oy);
+    ctx.lineTo(ox + dx2, oy + dy2);
+    ctx.stroke();
+  });
+}
+
+// ── Scanner component ─────────────────────────────────────────────────────────
 export default function Scanner() {
-  const webcamRef   = useRef(null);
-  const canvasRef   = useRef(null);
-  const rafRef      = useRef(null);
-  const prevPxRef   = useRef(null);
-  const scanningRef = useRef(false);   // prevents overlapping scans
-  const fpsRef      = useRef({ n: 0, t: Date.now() });
+  const webcamRef  = useRef(null);
+  const canvasRef  = useRef(null);
+  const rafRef     = useRef(null);
+  const scanningRef = useRef(false);
+  const facingRef  = useRef('user');  // kept in sync with state, used in render loop
+  const fpsRef     = useRef({ n: 0, t: Date.now() });
 
-  // "displayed" boxes lerped toward "target" boxes every rAF tick
-  const displayedBoxes = useRef([]);  // [{bbox, name, confidence, color, opacity, lastSeen}]
-  const targetBoxes    = useRef([]);  // latest result from server
+  // Box state lives in refs (updated every rAF, no re-renders needed)
+  const displayedBoxes = useRef([]);  // smoothly interpolated display state
+  const targetBoxes    = useRef([]);  // latest server result
 
-  const [mode,       setMode]       = useState('entry');
-  const [paused,     setPaused]     = useState(false);
-  const [facing,     setFacing]     = useState('user');
-  const [log,        setLog]        = useState([]);
-  const [fps,        setFps]        = useState(0);
-  const [active,     setActive]     = useState(false);
-  const [motion,     setMotion]     = useState(1);
-  const [liveChips,  setLiveChips]  = useState([]);
+  const [mode,      setMode]      = useState('entry');
+  const [paused,    setPaused]    = useState(false);
+  const [facing,    setFacing]    = useState('user');
+  const [log,       setLog]       = useState([]);
+  const [fps,       setFps]       = useState(0);
+  const [active,    setActive]    = useState(false);
+  const [liveChips, setLiveChips] = useState([]);
 
-  // ── Canvas renderer (runs at 60fps via rAF) ───────────────────
+  // Keep facingRef in sync so the render loop can use it without stale closure
+  useEffect(() => { facingRef.current = facing; }, [facing]);
+
+  // ── 60fps Canvas render loop ──────────────────────────────────────────────
   const renderLoop = useCallback(() => {
     rafRef.current = requestAnimationFrame(renderLoop);
 
     const canvas = canvasRef.current;
     const video  = webcamRef.current?.video;
-    if (!canvas || !video) return;
+    if (!canvas || !video || !video.videoWidth) return;
 
+    // Resize canvas to match container
     const cW = canvas.parentElement?.clientWidth  || 640;
     const cH = canvas.parentElement?.clientHeight || 480;
     if (canvas.width !== cW || canvas.height !== cH) {
@@ -66,138 +96,171 @@ export default function Scanner() {
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, cW, cH);
 
-    // Compute coordinate mapping (object-fit: contain offsets)
-    const vidW  = video.videoWidth  || 320;
-    const vidH  = video.videoHeight || 240;
+    const vidW = video.videoWidth;
+    const vidH = video.videoHeight;
+
+    // object-fit: contain — compute actual rendered dimensions + offset
     const scale = Math.min(cW / vidW, cH / vidH);
-    const offX  = (cW - vidW * scale) / 2;
-    const offY  = (cH - vidH * scale) / 2;
+    const rW    = vidW * scale;
+    const rH    = vidH * scale;
+    const offX  = (cW - rW) / 2;
+    const offY  = (cH - rH) / 2;
 
     const now = Date.now();
-
-    // Merge targets into displayed boxes (lerp existing, add new, fade missing)
     const targets = targetBoxes.current;
 
-    // For each target, find matching displayed box (by proximity of centre)
+    // Merge server targets into displayed boxes with lerp
     targets.forEach(t => {
-      const tc = [(t.bbox[0]+t.bbox[2])/2, (t.bbox[1]+t.bbox[3])/2];
-      let best = null, bestDist = 999999;
+      let bestIdx  = -1;
+      let bestDist = Infinity;
+
       displayedBoxes.current.forEach((d, i) => {
-        const dc = [(d.bbox[0]+d.bbox[2])/2, (d.bbox[1]+d.bbox[3])/2];
-        const dist = Math.hypot(tc[0]-dc[0], tc[1]-dc[1]);
-        if (dist < bestDist) { bestDist = dist; best = i; }
+        const dist = boxDist(t.bbox, d.bbox);
+        if (dist < bestDist) { bestDist = dist; bestIdx = i; }
       });
 
-      if (best !== null && bestDist < 120) {
-        // Lerp toward new position
-        displayedBoxes.current[best].bbox = lerpBox(
-          displayedBoxes.current[best].bbox, t.bbox, LERP
-        );
-        displayedBoxes.current[best].name       = t.name;
-        displayedBoxes.current[best].confidence = t.confidence;
-        displayedBoxes.current[best].color      = t.color;
-        displayedBoxes.current[best].lastSeen   = now;
-        displayedBoxes.current[best].opacity    = 1;
+      // Match threshold: 15% of rendered width
+      const matchThreshold = rW * 0.15;
+
+      if (bestIdx !== -1 && bestDist < matchThreshold) {
+        const d = displayedBoxes.current[bestIdx];
+        d.bbox       = lerpBox(d.bbox, t.bbox, LERP);
+        d.name       = t.name;
+        d.confidence = t.confidence;
+        d.color      = t.color;
+        d.reason     = t.reason;
+        d.lastSeen   = now;
+        d.opacity    = 1;
       } else {
-        // New face — snap to position
         displayedBoxes.current.push({
           bbox:       [...t.bbox],
           name:       t.name,
           confidence: t.confidence,
           color:      t.color,
+          reason:     t.reason,
           lastSeen:   now,
           opacity:    1,
         });
       }
     });
 
-    // Fade out boxes not in targets
+    // Fade boxes not seen recently
     displayedBoxes.current = displayedBoxes.current
       .map(d => {
         const age = now - d.lastSeen;
-        return { ...d, opacity: age > FADE_MS ? 0 : 1 - (age / FADE_MS) * 0.5 };
+        return { ...d, opacity: age > FADE_MS ? 0 : 1 - (age / FADE_MS) * 0.6 };
       })
       .filter(d => d.opacity > 0.05);
 
-    // Draw all displayed boxes
+    // Draw all boxes
     displayedBoxes.current.forEach(d => {
+      ctx.save();
       ctx.globalAlpha = d.opacity;
-      const [x1, y1, x2, y2] = d.bbox;
-      const rx1 = offX + x1 * scale;
-      const ry1 = offY + y1 * scale;
-      const rw  = (x2 - x1) * scale;
-      const rh  = (y2 - y1) * scale;
+
+      // ── Coordinate transform ──────────────────────────────────
+      // Server bbox is in the same space as the image sent (max_dim 480 or native)
+      // We need to map to the rendered canvas area accounting for:
+      //   1. Scale from detection image size → rendered video size
+      //   2. object-fit:contain offset
+      //   3. Mirror if front camera (CSS mirrors video but NOT our canvas)
+      let [bx1, by1, bx2, by2] = d.bbox;
+
+      // Scale bbox from detection image coords to rendered video coords
+      // The HF Space receives a resized image (max 480px) so we need to know
+      // the ratio between the actual video frame and what was sent.
+      // We send at max_dim=480 — compute scale relative to original video.
+      const sent_dim   = Math.min(480, Math.max(vidW, vidH));
+      const sent_scale = sent_dim / Math.max(vidW, vidH);
+      const sent_w     = Math.round(vidW * sent_scale);
+      const sent_h     = Math.round(vidH * sent_scale);
+
+      // Map from detection space → video space
+      const dx1 = bx1 / sent_w * vidW;
+      const dy1 = by1 / sent_h * vidH;
+      const dx2 = bx2 / sent_w * vidW;
+      const dy2 = by2 / sent_h * vidH;
+
+      // Map from video space → canvas space (object-fit:contain)
+      let rx1 = offX + dx1 * scale;
+      let ry1 = offY + dy1 * scale;
+      let rx2 = offX + dx2 * scale;
+      let ry2 = offY + dy2 * scale;
+
+      // Mirror X for front camera (CSS flips video, canvas is unflipped)
+      if (facingRef.current === 'user') {
+        const tmp = cW - rx2;
+        rx2       = cW - rx1;
+        rx1       = tmp;
+      }
+
+      const rw = rx2 - rx1;
+      const rh = ry2 - ry1;
       const col = d.color;
 
-      // Box
+      // Box rect (semi-transparent fill for depth)
+      ctx.fillStyle = col + '15';
+      ctx.fillRect(rx1, ry1, rw, rh);
+
+      // Box stroke
       ctx.strokeStyle = col;
-      ctx.lineWidth   = 2;
+      ctx.lineWidth   = 1.5;
       ctx.strokeRect(rx1, ry1, rw, rh);
 
       // Corner accents
-      const cs = Math.min(12, rw * 0.15);
-      ctx.lineWidth = 3;
-      [
-        [rx1, ry1, cs, 0, 0, cs],
-        [rx1+rw, ry1, -cs, 0, 0, cs],
-        [rx1, ry1+rh, cs, 0, 0, -cs],
-        [rx1+rw, ry1+rh, -cs, 0, 0, -cs],
-      ].forEach(([x, y, dx1, dy1, dx2, dy2]) => {
-        ctx.beginPath();
-        ctx.moveTo(x + dx1, y + dy1);
-        ctx.lineTo(x, y);
-        ctx.lineTo(x + dx2, y + dy2);
-        ctx.strokeStyle = col;
-        ctx.stroke();
-      });
+      drawCorners(ctx, rx1, ry1, rw, rh, col);
 
-      // Label
-      ctx.font      = 'bold 11px Inter, system-ui, sans-serif';
-      const label   = d.name === 'Unknown' ? `? ${d.confidence}%` : `${d.name}  ${d.confidence}%`;
-      const tw      = ctx.measureText(label).width;
-      const lh      = 20;
-      ctx.fillStyle = col + 'e0';
-      ctx.fillRect(rx1, ry1 - lh, tw + 10, lh);
+      // Label pill
+      const isSpoof   = d.reason === 'spoof';
+      const isUnknown = d.name === 'Unknown' || d.name === 'SPOOF';
+      const label     = isSpoof
+        ? `⚠ Spoof`
+        : isUnknown
+          ? `? ${d.confidence}%`
+          : `${d.name}  ${d.confidence}%`;
+
+      ctx.font         = 'bold 11px Inter, system-ui, sans-serif';
+      const textWidth  = ctx.measureText(label).width;
+      const pillH      = 22;
+      const pillPad    = 8;
+      const pillX      = rx1;
+      const pillY      = ry1 - pillH - 2;
+      const pillW      = textWidth + pillPad * 2;
+
+      // Pill background
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      ctx.roundRect?.(pillX, pillY, pillW, pillH, 4) ||
+        ctx.rect(pillX, pillY, pillW, pillH);
+      ctx.fill();
+
+      // Pill text
+      ctx.fillStyle   = '#fff';
       ctx.globalAlpha = d.opacity;
-      ctx.fillStyle = '#fff';
-      ctx.fillText(label, rx1 + 5, ry1 - 5);
+      ctx.fillText(label, pillX + pillPad, pillY + pillH - 6);
 
-      ctx.globalAlpha = 1;
+      ctx.restore();
     });
   }, []);
 
-  // Start render loop on mount
+  // Start render loop
   useEffect(() => {
     rafRef.current = requestAnimationFrame(renderLoop);
     return () => cancelAnimationFrame(rafRef.current);
   }, [renderLoop]);
 
-  // ── Scan pipeline (non-blocking) ──────────────────────────────
+  // ── Scan pipeline ─────────────────────────────────────────────────────────
   const scan = useCallback(async () => {
     if (paused || scanningRef.current || !webcamRef.current) return;
     scanningRef.current = true;
 
-    const src = webcamRef.current.getScreenshot({ width: 320, height: 240 });
+    // Send at 480×360 — good quality without being too slow to upload
+    const src = webcamRef.current.getScreenshot({ width: 480, height: 360 });
     if (!src) { scanningRef.current = false; return; }
-
-    // Client-side motion check
-    try {
-      const tmp = document.createElement('canvas');
-      tmp.width = 64; tmp.height = 48;
-      const tc  = tmp.getContext('2d');
-      const img = new Image();
-      img.src   = src;
-      await new Promise(r => { img.onload = r; });
-      tc.drawImage(img, 0, 0, 64, 48);
-      const px = tc.getImageData(0, 0, 64, 48).data;
-      setMotion(motionScore(prevPxRef.current, px));
-      prevPxRef.current = px;
-    } catch {}
 
     try {
       const blob = await (await fetch(src)).blob();
       const form = new FormData();
-      form.append('image', blob, 'f.jpg');
+      form.append('image', blob, 'frame.jpg');
       form.append('event_type', mode);
 
       const res  = await api.scan(form);
@@ -206,14 +269,16 @@ export default function Scanner() {
       setActive(true);
       setLiveChips(dets);
 
-      // Update target boxes (renderer will lerp toward these)
+      // Build target boxes for the render loop
       targetBoxes.current = dets
         .filter(d => d.bbox)
         .map(d => ({
           bbox:       d.bbox,
           name:       d.name,
           confidence: d.confidence,
-          color:      d.reason === 'spoof'   ? '#eab308'
+          reason:     d.reason,
+          color:      d.reason === 'spoof'   ? '#f59e0b'
+                    : d.reason === 'poor_angle' || d.reason === 'blurry' ? '#6b7280'
                     : d.name  !== 'Unknown'  ? '#22c55e'
                     :                          '#ef4444',
         }));
@@ -234,12 +299,12 @@ export default function Scanner() {
       fpsRef.current.n++;
       const now = Date.now();
       if (now - fpsRef.current.t >= 3000) {
-        setFps(Math.round(
-          fpsRef.current.n / ((now - fpsRef.current.t) / 1000)
-        ));
+        setFps(Math.round(fpsRef.current.n / ((now - fpsRef.current.t) / 1000)));
         fpsRef.current = { n: 0, t: now };
       }
-    } catch {}
+    } catch (e) {
+      console.warn('Scan error:', e);
+    }
 
     scanningRef.current = false;
   }, [paused, mode]);
@@ -249,32 +314,18 @@ export default function Scanner() {
     return () => clearInterval(t);
   }, [scan]);
 
-  // When paused, clear target boxes so they fade
   useEffect(() => {
     if (paused) targetBoxes.current = [];
   }, [paused]);
-
-  const motionOk  = motion > 0.008;
-  const motionLow = motion > 0.003 && !motionOk;
 
   return (
     <div className="space-y-5">
       <div>
         <h1 className="text-xl font-semibold tracking-tight">Live Scanner</h1>
         <p className="text-sm text-muted-foreground mt-0.5">
-          Pipeline detection · {fps > 0 ? `${fps} fps server` : 'warming up…'} · 60fps render
+          {fps > 0 ? `${fps} fps` : 'warming up…'} · 60fps render · buffalo_l
         </p>
       </div>
-
-      {!motionOk && !motionLow && active && (
-        <Alert variant="warning">
-          <span>⚠</span>
-          <div>
-            <p className="font-medium text-sm">Static image detected</p>
-            <p className="text-xs mt-0.5 opacity-80">No movement in frame — photo spoofing suspected.</p>
-          </div>
-        </Alert>
-      )}
 
       {/* Mode toggle */}
       <div className="flex items-center gap-3">
@@ -288,34 +339,25 @@ export default function Scanner() {
           ]}
         />
         <div className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
-          <span className={`dot ${motionOk ? 'dot-green' : motionLow ? 'dot-yellow' : 'dot-red'} ${active && !paused && motionOk ? 'dot-pulse' : ''}`} />
-          <span>{motionOk ? 'Live' : motionLow ? 'Low motion' : 'Static'}</span>
+          <span className={`dot ${active && !paused ? 'dot-green dot-pulse' : 'dot-gray'}`} />
+          <span>{active && !paused ? 'Live' : paused ? 'Paused' : 'Connecting…'}</span>
         </div>
       </div>
 
-      {/* Camera + 60fps canvas overlay */}
-      <div className="camera-wrapper" style={{ aspectRatio: '4/3' }}>
+      {/* Camera + canvas overlay */}
+      <div className="camera-wrapper" style={{ aspectRatio: '4/3', position: 'relative', overflow: 'hidden', borderRadius: '12px', background: '#000' }}>
         <Webcam
           ref={webcamRef}
           screenshotFormat="image/jpeg"
           videoConstraints={{ width: 640, height: 480, facingMode: facing }}
           mirrored={facing === 'user'}
-          className="cam-contain"
+          style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}
         />
-        {/* Canvas sits on top — renders at 60fps */}
         <canvas
           ref={canvasRef}
-          className="bbox-layer"
-          style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}
+          style={{ position: 'absolute', inset: 0, pointerEvents: 'none', width: '100%', height: '100%' }}
         />
-        {active && !paused && motionOk && <div className="scan-line" />}
-        {/* Motion bar */}
-        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-border">
-          <div
-            className={cn('h-full transition-colors', motionOk ? 'bg-green-500' : motionLow ? 'bg-yellow-500' : 'bg-red-500')}
-            style={{ width: `${Math.min(100, motion * 6000)}%` }}
-          />
-        </div>
+        {active && !paused && <div className="scan-line" />}
       </div>
 
       {/* Controls */}
@@ -327,10 +369,19 @@ export default function Scanner() {
         >
           {paused ? '▶ Resume' : '⏸ Pause'}
         </Button>
-        <Button variant="outline" size="sm" onClick={() => setFacing(f => f === 'user' ? 'environment' : 'user')}>
+        <Button variant="outline" size="sm" onClick={() => {
+          setFacing(f => f === 'user' ? 'environment' : 'user');
+          displayedBoxes.current = [];
+          targetBoxes.current    = [];
+        }}>
           ⟳ Flip
         </Button>
-        <Button variant="outline" size="sm" onClick={() => { setLog([]); setLiveChips([]); targetBoxes.current = []; displayedBoxes.current = []; }}>
+        <Button variant="outline" size="sm" onClick={() => {
+          setLog([]);
+          setLiveChips([]);
+          targetBoxes.current    = [];
+          displayedBoxes.current = [];
+        }}>
           Clear
         </Button>
       </div>
@@ -340,16 +391,21 @@ export default function Scanner() {
         <div className="flex flex-wrap gap-1.5">
           {liveChips.map((d, i) => {
             const isSpoof = d.reason === 'spoof';
-            const isKnown = !isSpoof && d.name !== 'Unknown';
+            const isQuality = d.reason === 'poor_angle' || d.reason === 'blurry';
+            const isKnown = !isSpoof && !isQuality && d.name !== 'Unknown';
             return (
               <div key={i} className={cn(
                 'flex items-center gap-1.5 px-2.5 py-1 border rounded-full text-xs font-medium',
-                isSpoof ? 'border-yellow-200 bg-yellow-50 text-yellow-700 dark:border-yellow-800 dark:bg-yellow-950 dark:text-yellow-300'
-                : isKnown ? 'border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950 dark:text-green-300'
-                : 'border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300'
+                isSpoof
+                  ? 'border-yellow-200 bg-yellow-50 text-yellow-700 dark:border-yellow-800 dark:bg-yellow-950 dark:text-yellow-300'
+                  : isQuality
+                    ? 'border-gray-200 bg-gray-50 text-gray-500 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-400'
+                  : isKnown
+                    ? 'border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950 dark:text-green-300'
+                    : 'border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300'
               )}>
-                <span>{isSpoof ? '⚠' : isKnown ? '✓' : '?'}</span>
-                {d.name} · {d.confidence}%
+                <span>{isSpoof ? '⚠' : isQuality ? '~' : isKnown ? '✓' : '?'}</span>
+                {isSpoof ? 'Spoof detected' : isQuality ? `${d.name} (${d.reason})` : `${d.name} · ${d.confidence}%`}
                 {d.reason?.startsWith('cooldown') && (
                   <span className="opacity-60 text-[10px]">({d.reason})</span>
                 )}
