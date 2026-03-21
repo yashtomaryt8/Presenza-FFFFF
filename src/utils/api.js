@@ -45,6 +45,8 @@ export const api = {
   exportCSV:     (date)     => req(`/export/?date=${date}`),
   resetPresence: ()         => req('/reset-presence/', { method: 'POST' }),
 
+  extractMulti: (form) => req('/extract-multi/', { method: 'POST', body: form }),
+
   aiInsight: (mode, prompt = '') =>
     req('/ai-insight/', {
       method:  'POST',
