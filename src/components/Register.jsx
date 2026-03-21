@@ -1,6 +1,6 @@
 import React, { useRef, useState, useCallback } from 'react';
 import Webcam from 'react-webcam';
-import { Button, Card, CardHeader, CardTitle, CardBody, Input, Badge, Alert, Spinner, cn } from './ui';
+import { Button, Card, CardHeader, CardTitle, CardBody, Input, Badge, Alert, Spinner } from './ui';
 import { api } from '../utils/api';
 
 const MAX   = 10;
