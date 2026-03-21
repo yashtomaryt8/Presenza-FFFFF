@@ -1,0 +1,13 @@
+{
+  "short_name": "AttendAI",
+  "name": "AttendAI – Smart Attendance System",
+  "description": "AI-powered face recognition attendance system",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#060708",
+  "theme_color": "#060708",
+  "orientation": "portrait-primary",
+  "icons": [
+    { "src": "favicon.ico", "sizes": "64x64 32x32 24x24 16x16", "type": "image/x-icon" }
+  ]
+}
