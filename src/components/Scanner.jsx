@@ -60,12 +60,6 @@ function lerpBox(from, to, t) {
           lerp(from[2],to[2],t), lerp(from[3],to[3],t)];
 }
 
-function boxDist(a, b) {
-  const ca = [(a[0]+a[2])/2, (a[1]+a[3])/2];
-  const cb = [(b[0]+b[2])/2, (b[1]+b[3])/2];
-  return Math.hypot(ca[0]-cb[0], ca[1]-cb[1]);
-}
-
 function drawCorners(ctx, x, y, w, h, color, size = 14) {
   const s = Math.min(size, w * 0.2, h * 0.2);
   ctx.strokeStyle = color;
